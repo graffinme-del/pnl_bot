@@ -1,0 +1,21 @@
+# Виртуальное окружение
+venv/
+.venv/
+env/
+
+# Переменные окружения (секреты)
+.env
+.env.local
+
+# Кэш и сборка
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+
+# Сгенерированные графики
+charts/
+
+# Логи
+*.log
