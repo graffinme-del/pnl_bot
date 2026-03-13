@@ -5,7 +5,8 @@ from datetime import datetime, time as dtime
 from pathlib import Path
 
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import BotCommand, Message
+from aiogram.client.default import DefaultBotProperties
+from aiogram.types import BotCommand, BotCommandScopeAllPrivateChats, Message
 from aiogram.utils.keyboard import ReplyKeyboardMarkup, KeyboardButton
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -20,7 +21,10 @@ from account_tracker.charts import (
 from account_tracker.sync_trades import sync_trades_once
 
 
-bot = Bot(token=SETTINGS.telegram_bot_token, parse_mode="HTML")
+bot = Bot(
+    token=SETTINGS.telegram_bot_token,
+    default=DefaultBotProperties(parse_mode="HTML"),
+)
 dp = Dispatcher()
 
 
@@ -119,12 +123,14 @@ def _setup_scheduler(scheduler: AsyncIOScheduler) -> None:
 
 
 async def main() -> None:
-    # Обновляем меню команд бота (отображается при нажатии / или на имя бота)
-    await bot.set_my_commands([
+    # Меню команд: для всех личных чатов и для русского языка
+    commands = [
         BotCommand(command="pnl_today", description="Отчёт за сегодня"),
         BotCommand(command="pnl_week", description="Отчёт за неделю"),
         BotCommand(command="pnl_month", description="Отчёт за месяц"),
-    ])
+    ]
+    await bot.set_my_commands(commands, scope=BotCommandScopeAllPrivateChats())
+    await bot.set_my_commands(commands, scope=BotCommandScopeAllPrivateChats(), language_code="ru")
 
     scheduler = AsyncIOScheduler()
     _setup_scheduler(scheduler)
@@ -134,5 +140,8 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass  # Ctrl+C — нормальное завершение, без traceback
 
