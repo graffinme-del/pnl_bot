@@ -5,7 +5,7 @@ from datetime import datetime, time as dtime
 from pathlib import Path
 
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message
+from aiogram.types import BotCommand, Message
 from aiogram.utils.keyboard import ReplyKeyboardMarkup, KeyboardButton
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -119,6 +119,13 @@ def _setup_scheduler(scheduler: AsyncIOScheduler) -> None:
 
 
 async def main() -> None:
+    # Обновляем меню команд бота (отображается при нажатии / или на имя бота)
+    await bot.set_my_commands([
+        BotCommand(command="pnl_today", description="Отчёт за сегодня"),
+        BotCommand(command="pnl_week", description="Отчёт за неделю"),
+        BotCommand(command="pnl_month", description="Отчёт за месяц"),
+    ])
+
     scheduler = AsyncIOScheduler()
     _setup_scheduler(scheduler)
     scheduler.start()
