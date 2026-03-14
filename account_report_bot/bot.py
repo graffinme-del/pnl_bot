@@ -7,7 +7,6 @@ from pathlib import Path
 from aiogram import Bot, Dispatcher
 from aiogram.filters import Command
 from aiogram.client.default import DefaultBotProperties
-from aiogram.utils.backoff import BackoffConfig
 from aiogram.types import BotCommand, BotCommandScopeAllPrivateChats, FSInputFile, Message
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -143,10 +142,10 @@ def _setup_scheduler(scheduler: AsyncIOScheduler) -> None:
         name="monthly_pnl",
     )
 
-    # Периодический sync сделок — каждые 15 минут (реже = меньше нагрузка и ошибок)
+    # Периодический sync сделок — каждые 5 минут
     scheduler.add_job(
         sync_trades_once,
-        CronTrigger(minute="*/15", timezone=tz),
+        CronTrigger(minute="*/5", timezone=tz),
         name="sync_trades",
     )
 
@@ -165,18 +164,7 @@ async def main() -> None:
     _setup_scheduler(scheduler)
     scheduler.start()
 
-    # polling_timeout=30 — дольше ждём ответ от Telegram (меньше Request timeout)
-    # backoff — более терпеливый retry при сетевых ошибках
-    await dp.start_polling(
-        bot,
-        polling_timeout=30,
-        backoff_config=BackoffConfig(
-            min_delay=1.0,
-            max_delay=15.0,
-            factor=1.5,
-            jitter=0.2,
-        ),
-    )
+    await dp.start_polling(bot)
 
 
 if __name__ == "__main__":

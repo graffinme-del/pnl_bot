@@ -93,58 +93,33 @@ class BinanceClient:
     ) -> List[Trade]:
         """
         Fetch user's futures trades for a symbol using /fapi/v1/userTrades.
-        При -1021 (timestamp) — retry с обновлением времени сервера.
         """
+        # Обновляем смещение времени перед каждым запросом — иначе -1021 при долгом sync
+        await self._get_server_time()
         path = "/fapi/v1/userTrades"
-        last_error: Optional[Exception] = None
-        for attempt in range(2):  # максимум 2 попытки
-            # Обновляем время перед каждым запросом — иначе -1021 при долгом sync
-            await self._get_server_time()
-            ts = await self._timestamp_ms()
-            params: Dict[str, Any] = {
-                "symbol": symbol,
-                "timestamp": ts,
-                "recvWindow": 60000,
-                "limit": limit,
-            }
-            if from_id is not None:
-                params["fromId"] = from_id
+        ts = await self._timestamp_ms()
+        params: Dict[str, Any] = {
+            "symbol": symbol,
+            "timestamp": ts,
+            "recvWindow": 60000,
+            "limit": limit,
+        }
+        if from_id is not None:
+            params["fromId"] = from_id
 
-            signed = self._sign(params)
-            session = await self._get_session()
-            try:
-                async with session.get(BASE_URL + path, params=signed, timeout=30) as resp:
-                    if resp.status >= 400:
-                        text = await resp.text()
-                        if "-1021" in text and attempt == 0:
-                            # Timestamp outside recvWindow — сбрасываем offset и retry
-                            self._time_offset_ms = None
-                            last_error = aiohttp.ClientResponseError(
-                                request_info=resp.request_info,
-                                history=resp.history,
-                                status=resp.status,
-                                message=text,
-                                headers=resp.headers,
-                            )
-                            continue
-                        raise aiohttp.ClientResponseError(
-                            request_info=resp.request_info,
-                            history=resp.history,
-                            status=resp.status,
-                            message=text,
-                            headers=resp.headers,
-                        )
-                    data: List[Dict[str, Any]] = await resp.json()
-                    break
-            except aiohttp.ClientResponseError as e:
-                if "-1021" in str(e) and attempt == 0:
-                    self._time_offset_ms = None
-                    last_error = e
-                    continue
-                raise
-        else:
-            if last_error:
-                raise last_error
+        signed = self._sign(params)
+        session = await self._get_session()
+        async with session.get(BASE_URL + path, params=signed, timeout=30) as resp:
+            if resp.status >= 400:
+                text = await resp.text()
+                raise aiohttp.ClientResponseError(
+                    request_info=resp.request_info,
+                    history=resp.history,
+                    status=resp.status,
+                    message=text,
+                    headers=resp.headers,
+                )
+            data: List[Dict[str, Any]] = await resp.json()
 
         trades: List[Trade] = []
         now_ms = int(time.time() * 1000)
