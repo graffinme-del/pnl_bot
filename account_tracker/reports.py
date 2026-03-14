@@ -64,13 +64,10 @@ MIN_PNL_THRESHOLD = 0.01
 
 
 def _filter_trades(trades: Iterable[Trade], start: datetime, end: datetime) -> List[Trade]:
+    """Фильтр только по времени. Не отсекаем fills с pnl=0 — у них есть комиссия."""
     start_ts = int(start.timestamp() * 1000)
     end_ts = int(end.timestamp() * 1000)
-    return [
-        t
-        for t in trades
-        if start_ts <= t.close_time <= end_ts and abs(t.pnl_gross) >= MIN_PNL_THRESHOLD
-    ]
+    return [t for t in trades if start_ts <= t.close_time <= end_ts]
 
 
 def _calc_period_bounds(period: Period, now: datetime) -> Tuple[datetime, datetime]:
