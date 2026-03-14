@@ -4,10 +4,11 @@ import asyncio
 from datetime import datetime, time as dtime
 from pathlib import Path
 
-from aiogram import Bot, Dispatcher, F
+from aiogram import Bot, Dispatcher
+from aiogram.filters import Command
 from aiogram.client.default import DefaultBotProperties
-from aiogram.types import BotCommand, BotCommandScopeAllPrivateChats, Message
-from aiogram.utils.keyboard import ReplyKeyboardMarkup, KeyboardButton
+from aiogram.utils.backoff import BackoffConfig
+from aiogram.types import BotCommand, BotCommandScopeAllPrivateChats, FSInputFile, Message
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
@@ -28,66 +29,91 @@ bot = Bot(
 dp = Dispatcher()
 
 
-def _main_keyboard() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="/pnl_today")],
-            [KeyboardButton(text="/pnl_week"), KeyboardButton(text="/pnl_month")],
-        ],
-        resize_keyboard=True,
-    )
-
-
 async def _send_report(
     period: str,
     auto: bool,
+    source_message: Message | None = None,
 ) -> None:
+    # Сразу удаляем командное сообщение пользователя (при ручном вызове)
+    if not auto and source_message is not None:
+        try:
+            await source_message.delete()
+        except Exception:
+            pass
+
+    # Отчёт строится из уже подтянутых данных (sync каждые 5 мин).
+    # Принудительный sync перед каждым отчётом убран — он занимал минуты
+    # (200+ символов) и бот «зависал» без ответа.
     now = datetime.now(tz=SETTINGS.timezone)
     report = build_pnl_report(period=period, now=now)
 
-    # Графики только для недели и месяца
+    # Графики только для недели и месяца (по агрегированным позициям)
     images: list[Path] = []
-    if period in ("week", "month") and report.trades:
+    if period in ("week", "month") and report.positions:
         charts_dir = Path("charts") / period
         equity_path = charts_dir / "equity.png"
         pie_path = charts_dir / "long_short.png"
         hist_path = charts_dir / "hist.png"
-        plot_equity_curve(report.trades, equity_path)
-        plot_long_short_pie(report.trades, pie_path)
-        plot_pnl_histogram(report.trades, hist_path)
+        plot_equity_curve(report.positions, equity_path)
+        plot_long_short_pie(report.positions, pie_path)
+        plot_pnl_histogram(report.positions, hist_path)
         images = [equity_path, pie_path, hist_path]
 
     chat_id = SETTINGS.report_chat_id
-    msg = await bot.send_message(chat_id, report.text, reply_markup=_main_keyboard())
+    # Telegram лимит ~4096 символов — разбиваем по строкам при необходимости
+    text = report.text
+    max_len = 4000
+    sent_ids: list[int] = []
+    if len(text) <= max_len:
+        m = await bot.send_message(chat_id, text)
+        sent_ids.append(m.message_id)
+    else:
+        lines = text.split("\n")
+        parts: list[str] = []
+        buf = ""
+        for line in lines:
+            if len(buf) + len(line) + 1 <= max_len:
+                buf += line + "\n"
+            else:
+                if buf:
+                    parts.append(buf.rstrip())
+                buf = line + "\n"
+        if buf:
+            parts.append(buf.rstrip())
+        for part in parts:
+            m = await bot.send_message(chat_id, part)
+            sent_ids.append(m.message_id)
 
-    # Принудительно вызванные команды — автоудаление через 30 секунд
-    if not auto:
-        await asyncio.sleep(30)
-        try:
-            await bot.delete_message(chat_id, msg.message_id)
-        except Exception:
-            pass
-
-    # Отправка картинок (они не удаляются даже для auto=False)
+    # Отправка картинок
     for img_path in images:
         if img_path.exists():
-            with img_path.open("rb") as f:
-                await bot.send_photo(chat_id, f)
+            m = await bot.send_photo(chat_id, FSInputFile(str(img_path)))
+            if not auto:
+                sent_ids.append(m.message_id)
+
+    # При ручном вызове — удалить текст и картинки через 2 минуты
+    if not auto:
+        await asyncio.sleep(120)
+        for mid in sent_ids:
+            try:
+                await bot.delete_message(chat_id, mid)
+            except Exception:
+                pass
 
 
-@dp.message(F.text == "/pnl_today")
+@dp.message(Command("pnl_today"))
 async def cmd_pnl_today(message: Message) -> None:
-    await _send_report("day", auto=False)
+    await _send_report("day", auto=False, source_message=message)
 
 
-@dp.message(F.text == "/pnl_week")
+@dp.message(Command("pnl_week"))
 async def cmd_pnl_week(message: Message) -> None:
-    await _send_report("week", auto=False)
+    await _send_report("week", auto=False, source_message=message)
 
 
-@dp.message(F.text == "/pnl_month")
+@dp.message(Command("pnl_month"))
 async def cmd_pnl_month(message: Message) -> None:
-    await _send_report("month", auto=False)
+    await _send_report("month", auto=False, source_message=message)
 
 
 def _setup_scheduler(scheduler: AsyncIOScheduler) -> None:
@@ -95,29 +121,32 @@ def _setup_scheduler(scheduler: AsyncIOScheduler) -> None:
 
     # Ежедневно в 21:00
     scheduler.add_job(
-        lambda: _send_report("day", auto=True),
+        _send_report,
         CronTrigger(hour=21, minute=0, timezone=tz),
+        args=("day", True, None),
         name="daily_pnl",
     )
 
     # Еженедельно в воскресенье в 21:00
     scheduler.add_job(
-        lambda: _send_report("week", auto=True),
+        _send_report,
         CronTrigger(day_of_week="sun", hour=21, minute=0, timezone=tz),
+        args=("week", True, None),
         name="weekly_pnl",
     )
 
     # Ежемесячно в последний день месяца в 21:00
     scheduler.add_job(
-        lambda: _send_report("month", auto=True),
+        _send_report,
         CronTrigger(day="last", hour=21, minute=0, timezone=tz),
+        args=("month", True, None),
         name="monthly_pnl",
     )
 
-    # Периодический sync сделок, например каждые 5 минут
+    # Периодический sync сделок — каждые 15 минут (реже = меньше нагрузка и ошибок)
     scheduler.add_job(
         sync_trades_once,
-        CronTrigger(minute="*/5", timezone=tz),
+        CronTrigger(minute="*/15", timezone=tz),
         name="sync_trades",
     )
 
@@ -136,7 +165,18 @@ async def main() -> None:
     _setup_scheduler(scheduler)
     scheduler.start()
 
-    await dp.start_polling(bot)
+    # polling_timeout=30 — дольше ждём ответ от Telegram (меньше Request timeout)
+    # backoff — более терпеливый retry при сетевых ошибках
+    await dp.start_polling(
+        bot,
+        polling_timeout=30,
+        backoff_config=BackoffConfig(
+            min_delay=1.0,
+            max_delay=15.0,
+            factor=1.5,
+            jitter=0.2,
+        ),
+    )
 
 
 if __name__ == "__main__":
