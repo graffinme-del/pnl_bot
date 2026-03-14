@@ -28,14 +28,35 @@ def append_trades(trades: Iterable[Trade]) -> None:
 def read_all_trades() -> List[Trade]:
     ensure_storage_dir()
     result: List[Trade] = []
+    seen: set[tuple[str, int]] = set()  # (symbol, trade_id) — дедупликация
     with TRADES_PATH.open("r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
             data: TradeRow = json.loads(line)
+            key = (data.get("symbol", ""), int(data.get("trade_id", 0)))
+            if key in seen:
+                continue
+            seen.add(key)
             result.append(Trade.from_row(data))
     return result
+
+
+def get_known_symbols() -> set[str]:
+    """Символы, по которым уже есть сделки в хранилище."""
+    ensure_storage_dir()
+    symbols: set[str] = set()
+    with TRADES_PATH.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            data: dict = json.loads(line)
+            s = data.get("symbol")
+            if s:
+                symbols.add(s)
+    return symbols
 
 
 def get_last_trade_id_for_symbol(symbol: str) -> int | None:

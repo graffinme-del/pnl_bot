@@ -1,0 +1,16 @@
+[Unit]
+Description=Binance PnL Report Telegram Bot
+After=network.target
+
+[Service]
+Type=simple
+User=YOUR_USER
+WorkingDirectory=/home/YOUR_USER/pnl_bot
+Environment=PATH=/home/YOUR_USER/pnl_bot/venv/bin
+EnvironmentFile=/home/YOUR_USER/pnl_bot/.env
+ExecStart=/home/YOUR_USER/pnl_bot/venv/bin/python -m account_report_bot.bot
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

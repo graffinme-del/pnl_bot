@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Iterable, List, Literal, Tuple
@@ -13,18 +14,58 @@ Period = Literal["day", "week", "month"]
 
 
 @dataclass
+class AggregatedPosition:
+    """Одна закрытая позиция (ордер) — сумма всех исполнений (fills)."""
+    order_id: int
+    symbol: str
+    position_side: str
+    pnl_gross: float
+    commission: float
+    close_time: int  # ms, время последнего исполнения
+
+
+def _aggregate_by_order(trades: List[Trade]) -> List[AggregatedPosition]:
+    """Группируем fills по order_id — одна строка = одна закрытая позиция."""
+    by_order: dict[int, List[Trade]] = defaultdict(list)
+    for t in trades:
+        by_order[t.order_id].append(t)
+
+    result: List[AggregatedPosition] = []
+    for order_id, group in by_order.items():
+        first = group[0]
+        result.append(AggregatedPosition(
+            order_id=order_id,
+            symbol=first.symbol,
+            position_side=first.position_side or first.side,
+            pnl_gross=sum(x.pnl_gross for x in group),
+            commission=sum(x.commission for x in group),
+            close_time=max(x.close_time for x in group),
+        ))
+    return result
+
+
+@dataclass
 class ReportResult:
     text: str
     period: Period
     start: datetime
     end: datetime
     trades: List[Trade]
+    positions: List[AggregatedPosition]  # агрегированные позиции для графиков
+
+
+# Минимальный |PnL| для учёта сделки (отсекаем «нулевые» / отменённые)
+MIN_PNL_THRESHOLD = 0.01
 
 
 def _filter_trades(trades: Iterable[Trade], start: datetime, end: datetime) -> List[Trade]:
     start_ts = int(start.timestamp() * 1000)
     end_ts = int(end.timestamp() * 1000)
-    return [t for t in trades if start_ts <= t.close_time <= end_ts]
+    return [
+        t
+        for t in trades
+        if start_ts <= t.close_time <= end_ts and abs(t.pnl_gross) >= MIN_PNL_THRESHOLD
+    ]
 
 
 def _calc_period_bounds(period: Period, now: datetime) -> Tuple[datetime, datetime]:
@@ -50,15 +91,19 @@ def _format_report(period: Period, start: datetime, end: datetime, trades: List[
     start_local = start.astimezone(tz)
     end_local = end.astimezone(tz)
 
-    total_profit = sum(t.pnl_gross for t in trades if t.pnl_gross > 0)
-    total_loss = sum(t.pnl_gross for t in trades if t.pnl_gross < 0)
-    total_fees = sum(t.commission for t in trades)
+    # Агрегируем по ордерам: одна закрытая позиция = одна строка
+    positions = _aggregate_by_order(trades)
+    positions = [p for p in positions if abs(p.pnl_gross) >= MIN_PNL_THRESHOLD]
+
+    total_profit = sum(p.pnl_gross for p in positions if p.pnl_gross > 0)
+    total_loss = sum(p.pnl_gross for p in positions if p.pnl_gross < 0)
+    total_fees = sum(p.commission for p in positions)
     total_pnl = total_profit + total_loss
     net_pnl = total_pnl + total_fees
 
-    wins = sum(1 for t in trades if t.pnl_gross > 0)
-    losses = sum(1 for t in trades if t.pnl_gross < 0)
-    trades_count = len(trades)
+    wins = sum(1 for p in positions if p.pnl_gross > 0)
+    losses = sum(1 for p in positions if p.pnl_gross < 0)
+    trades_count = len(positions)
     winrate = (wins / trades_count * 100) if trades_count else 0.0
 
     header_date = end_local.strftime("%d.%m.%Y")
@@ -69,14 +114,14 @@ def _format_report(period: Period, start: datetime, end: datetime, trades: List[
     else:
         header = "📊 Отчёт по фьючерсам Binance — за МЕСЯЦ"
 
-    lines: List[str] = [header, "", "Итог за период:"]
-    lines.append(f"• Profit: {total_profit:.2f} USDT")
-    lines.append(f"• Loss: {total_loss:.2f} USDT")
-    lines.append(f"• Общий PnL (до комиссий): {total_pnl:.2f} USDT")
+    lines: List[str] = [header, "", "<b>Итог за период:</b>"]
+    lines.append(f"• Profit: <b>{total_profit:.2f} USDT</b>")
+    lines.append(f"• Loss: <b>{total_loss:.2f} USDT</b>")
+    lines.append(f"• Общий PnL: <b>{total_pnl:.2f} USDT</b>")
     lines.append(f"• Комиссии: {total_fees:.2f} USDT")
-    lines.append(f"• Чистый результат (после комиссий): {net_pnl:.2f} USDT")
-    lines.append(f"• Сделок: {trades_count}")
-    lines.append(f"• Winrate: {winrate:.1f}% ({wins} / {trades_count})")
+    lines.append(f"• Чистый результат: <b>{net_pnl:.2f} USDT</b>")
+    lines.append(f"• <b><i>Сделок: {trades_count}</i></b>")
+    lines.append(f"• <b><i>Winrate: {winrate:.1f}% ({wins} / {trades_count})</i></b>")
 
     if period in ("week", "month"):
         if abs(total_loss) > 1e-9:
@@ -88,65 +133,64 @@ def _format_report(period: Period, start: datetime, end: datetime, trades: List[
     # Detailed sections
     if period in ("day", "week"):
         lines.append("")
-        lines.append("По сделкам (в хронологическом порядке, только закрытые сделки):")
-        sorted_trades = sorted(trades, key=lambda t: t.close_time)
-        for idx, t in enumerate(sorted_trades, start=1):
-            dt = t.closed_at_dt.astimezone(tz)
+        lines.append("<b>По сделкам</b> (в хронологическом порядке, только закрытые позиции):")
+        sorted_positions = sorted(positions, key=lambda p: p.close_time)
+
+        max_positions_to_show = 60
+        for idx, p in enumerate(sorted_positions[:max_positions_to_show], start=1):
+            dt = datetime.fromtimestamp(p.close_time / 1000, tz=tz)
             if period == "day":
                 time_str = dt.strftime("%H:%M")
             else:
                 time_str = dt.strftime("%d.%m %H:%M")
             lines.append(
-                f"{idx}) {time_str}  {t.symbol}  {t.position_side or t.side}   {t.pnl_gross:.2f} USDT"
+                f"{idx}) {time_str}  {p.symbol}  {p.position_side}   {p.pnl_gross:.2f} USDT"
             )
+        hidden = max(0, len(sorted_positions) - max_positions_to_show)
+        if hidden > 0:
+            lines.append(f"... ещё {hidden} позиций скрыто.")
     else:
-        # month: aggregate by symbol
-        per_symbol: dict[str, List[Trade]] = {}
-        for t in trades:
-            per_symbol.setdefault(t.symbol, []).append(t)
+        # month: aggregate by symbol (позиции уже агрегированы по ордерам)
+        per_symbol: dict[str, List[AggregatedPosition]] = defaultdict(list)
+        for p in positions:
+            per_symbol[p.symbol].append(p)
         lines.append("")
         lines.append("По монетам (агрегировано за месяц):")
-        for symbol, ts in sorted(per_symbol.items()):
-            symbol_profit = sum(x.pnl_gross for x in ts if x.pnl_gross > 0)
-            symbol_loss = sum(x.pnl_gross for x in ts if x.pnl_gross < 0)
+        for symbol, ps in sorted(per_symbol.items()):
+            symbol_profit = sum(x.pnl_gross for x in ps if x.pnl_gross > 0)
+            symbol_loss = sum(x.pnl_gross for x in ps if x.pnl_gross < 0)
             symbol_pnl = symbol_profit + symbol_loss
             lines.append(
                 f"{symbol}: Profit {symbol_profit:.2f} USDT, Loss {symbol_loss:.2f} USDT, "
-                f"Общий PnL {symbol_pnl:.2f} USDT, сделок {len(ts)}"
+                f"Общий PnL {symbol_pnl:.2f} USDT, позиций {len(ps)}"
             )
 
     # Directions
-    long_trades = [t for t in trades if (t.position_side or t.side) == "LONG"]
-    short_trades = [t for t in trades if (t.position_side or t.side) == "SHORT"]
+    long_positions = [p for p in positions if p.position_side == "LONG"]
+    short_positions = [p for p in positions if p.position_side == "SHORT"]
 
-    def _dir_stats(ts: List[Trade]) -> tuple[float, float, float, int, float]:
-        d_profit = sum(t.pnl_gross for t in ts if t.pnl_gross > 0)
-        d_loss = sum(t.pnl_gross for t in ts if t.pnl_gross < 0)
+    def _dir_stats(ps: List[AggregatedPosition]) -> tuple[float, float, float, int, float]:
+        d_profit = sum(p.pnl_gross for p in ps if p.pnl_gross > 0)
+        d_loss = sum(p.pnl_gross for p in ps if p.pnl_gross < 0)
         d_pnl = d_profit + d_loss
-        d_count = len(ts)
-        d_wins = sum(1 for t in ts if t.pnl_gross > 0)
+        d_count = len(ps)
+        d_wins = sum(1 for p in ps if p.pnl_gross > 0)
         d_winrate = (d_wins / d_count * 100) if d_count else 0.0
         return d_profit, d_loss, d_pnl, d_count, d_winrate
 
-    long_profit, long_loss, long_pnl, long_count, long_wr = _dir_stats(long_trades)
-    short_profit, short_loss, short_pnl, short_count, short_wr = _dir_stats(short_trades)
+    long_profit, long_loss, long_pnl, long_count, long_wr = _dir_stats(long_positions)
+    short_profit, short_loss, short_pnl, short_count, short_wr = _dir_stats(short_positions)
 
     lines.append("")
-    lines.append("По направлениям:")
-    lines.append(
-        f"• Лонги: Profit {long_profit:.2f} USDT, Loss {long_loss:.2f} USDT, "
-        f"Общий PnL {long_pnl:.2f} USDT"
-    )
-    lines.append(
-        f"  Сделок: {long_count}, winrate {long_wr:.1f}%"
-    )
-    lines.append(
-        f"• Шорты: Profit {short_profit:.2f} USDT, Loss {short_loss:.2f} USDT, "
-        f"Общий PnL {short_pnl:.2f} USDT"
-    )
-    lines.append(
-        f"  Сделок: {short_count}, winrate {short_wr:.1f}%"
-    )
+    lines.append("<b><i>По направлениям:</i></b>")
+    lines.append("")
+    lines.append("<b>Лонги</b>")
+    lines.append(f"  Profit: {long_profit:.2f}  |  Loss: {long_loss:.2f}  |  PnL: <b>{long_pnl:.2f} USDT</b>")
+    lines.append(f"  Сделок: {long_count}  |  Winrate: {long_wr:.1f}%")
+    lines.append("")
+    lines.append("<b>Шорты</b>")
+    lines.append(f"  Profit: {short_profit:.2f}  |  Loss: {short_loss:.2f}  |  PnL: <b>{short_pnl:.2f} USDT</b>")
+    lines.append(f"  Сделок: {short_count}  |  Winrate: {short_wr:.1f}%")
 
     # Period footer
     if period == "day":
@@ -180,6 +224,11 @@ def build_pnl_report(period: Period, now: datetime | None = None) -> ReportResul
     start, end = _calc_period_bounds(period, now)
     all_trades = read_all_trades()
     period_trades = _filter_trades(all_trades, start, end)
+    positions = _aggregate_by_order(period_trades)
+    positions = [p for p in positions if abs(p.pnl_gross) >= MIN_PNL_THRESHOLD]
     text = _format_report(period, start, end, period_trades)
-    return ReportResult(text=text, period=period, start=start, end=end, trades=period_trades)
+    return ReportResult(
+        text=text, period=period, start=start, end=end,
+        trades=period_trades, positions=positions,
+    )
 

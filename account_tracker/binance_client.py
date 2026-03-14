@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
+import logging
 import time
 from typing import Any, Dict, List, Optional
 
 import aiohttp
+
+log = logging.getLogger(__name__)
 
 from .config import SETTINGS
 from .models import Trade
@@ -85,16 +89,13 @@ class BinanceClient:
                 symbols.append(symbol)
         return symbols
 
-    async def get_user_trades(
+    async def _fetch_user_trades_raw(
         self,
         symbol: str,
-        from_id: Optional[int] = None,
-        limit: int = 1000,
-    ) -> List[Trade]:
-        """
-        Fetch user's futures trades for a symbol using /fapi/v1/userTrades.
-        """
-        # Обновляем смещение времени перед каждым запросом — иначе -1021 при долгом sync
+        from_id: Optional[int],
+        limit: int,
+    ) -> List[Dict[str, Any]]:
+        """Один запрос к API. При -1021 бросает ClientResponseError."""
         await self._get_server_time()
         path = "/fapi/v1/userTrades"
         ts = await self._timestamp_ms()
@@ -110,8 +111,8 @@ class BinanceClient:
         signed = self._sign(params)
         session = await self._get_session()
         async with session.get(BASE_URL + path, params=signed, timeout=30) as resp:
+            text = await resp.text()
             if resp.status >= 400:
-                text = await resp.text()
                 raise aiohttp.ClientResponseError(
                     request_info=resp.request_info,
                     history=resp.history,
@@ -119,7 +120,27 @@ class BinanceClient:
                     message=text,
                     headers=resp.headers,
                 )
-            data: List[Dict[str, Any]] = await resp.json()
+            return json.loads(text)
+
+    async def get_user_trades(
+        self,
+        symbol: str,
+        from_id: Optional[int] = None,
+        limit: int = 1000,
+    ) -> List[Trade]:
+        """
+        Fetch user's futures trades for a symbol using /fapi/v1/userTrades.
+        При -1021 (timestamp) — одна повторная попытка с обновлением времени.
+        """
+        try:
+            data = await self._fetch_user_trades_raw(symbol, from_id, limit)
+        except aiohttp.ClientResponseError as e:
+            if "-1021" in str(e):
+                log.warning("Binance -1021 для %s, retry с обновлением времени", symbol)
+                self._time_offset_ms = None
+                data = await self._fetch_user_trades_raw(symbol, from_id, limit)
+            else:
+                raise
 
         trades: List[Trade] = []
         now_ms = int(time.time() * 1000)

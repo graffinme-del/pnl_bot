@@ -164,7 +164,8 @@ async def main() -> None:
     _setup_scheduler(scheduler)
     scheduler.start()
 
-    await dp.start_polling(bot)
+    # polling_timeout=30 — меньше Request timeout от Telegram
+    await dp.start_polling(bot, polling_timeout=30)
 
 
 if __name__ == "__main__":
