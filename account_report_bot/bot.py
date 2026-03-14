@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import datetime, time as dtime
+
+log = logging.getLogger(__name__)
 from pathlib import Path
 
 from aiogram import Bot, Dispatcher
@@ -90,14 +93,18 @@ async def _send_report(
             if not auto:
                 sent_ids.append(m.message_id)
 
-    # При ручном вызове — удалить текст и картинки через 2 минуты
-    if not auto:
-        await asyncio.sleep(120)
-        for mid in sent_ids:
-            try:
-                await bot.delete_message(chat_id, mid)
-            except Exception:
-                pass
+    # При ручном вызове — удалить текст и картинки через 2 минуты (в фоне)
+    if not auto and sent_ids:
+
+        async def _delete_after_delay() -> None:
+            await asyncio.sleep(120)
+            for mid in sent_ids:
+                try:
+                    await bot.delete_message(chat_id, mid)
+                except Exception as e:
+                    log.warning("Не удалось удалить сообщение %s: %s", mid, e)
+
+        asyncio.create_task(_delete_after_delay())
 
 
 @dp.message(Command("pnl_today"))
@@ -169,6 +176,7 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
