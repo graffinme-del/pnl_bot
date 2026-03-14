@@ -23,6 +23,11 @@ class AggregatedPosition:
     commission: float
     close_time: int  # ms, время последнего исполнения
 
+    @property
+    def pnl_net(self) -> float:
+        """Чистый PnL после комиссии (как в интерфейсе Binance)."""
+        return self.pnl_gross + self.commission
+
 
 def _aggregate_by_order(trades: List[Trade]) -> List[AggregatedPosition]:
     """Группируем fills по order_id — одна строка = одна закрытая позиция."""
@@ -143,8 +148,9 @@ def _format_report(period: Period, start: datetime, end: datetime, trades: List[
                 time_str = dt.strftime("%H:%M")
             else:
                 time_str = dt.strftime("%d.%m %H:%M")
+            # pnl_net = gross + commission — как в интерфейсе Binance (чистый результат)
             lines.append(
-                f"{idx}) {time_str}  {p.symbol}  {p.position_side}   {p.pnl_gross:.2f} USDT"
+                f"{idx}) {time_str}  {p.symbol}  {p.position_side}   {p.pnl_net:.2f} USDT"
             )
         hidden = max(0, len(sorted_positions) - max_positions_to_show)
         if hidden > 0:
