@@ -43,10 +43,17 @@ async def _send_report(
         except Exception:
             pass
 
-    # При ручном вызове — sync перед отчётом (новые символы, свежие данные)
-    if not auto:
+    # Sync перед ручным отчётом — свежие данные
+    if not auto and source_message:
         try:
+            status_msg = await bot.send_message(
+                source_message.chat.id, "Синхронизирую сделки..."
+            )
             await sync_trades_once()
+            try:
+                await status_msg.delete()
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -153,10 +160,10 @@ def _setup_scheduler(scheduler: AsyncIOScheduler) -> None:
         name="monthly_pnl",
     )
 
-    # Периодический sync сделок — каждые 5 минут
+    # Sync всех символов — каждые 15 минут (200+ запросов, ~2–3 мин)
     scheduler.add_job(
         sync_trades_once,
-        CronTrigger(minute="*/5", timezone=tz),
+        CronTrigger(minute="*/15", timezone=tz),
         name="sync_trades",
     )
 
