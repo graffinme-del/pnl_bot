@@ -43,9 +43,13 @@ async def _send_report(
         except Exception:
             pass
 
-    # Отчёт строится из уже подтянутых данных (sync каждые 5 мин).
-    # Принудительный sync перед каждым отчётом убран — он занимал минуты
-    # (200+ символов) и бот «зависал» без ответа.
+    # При ручном вызове — sync перед отчётом (новые символы, свежие данные)
+    if not auto:
+        try:
+            await sync_trades_once()
+        except Exception:
+            pass
+
     now = datetime.now(tz=SETTINGS.timezone)
     report = build_pnl_report(period=period, now=now)
 

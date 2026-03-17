@@ -66,6 +66,41 @@ class BinanceClient:
             return await self._get_server_time()
         return int(time.time() * 1000 + self._time_offset_ms)
 
+    async def get_recent_income_symbols(self, days: int = 7) -> set[str]:
+        """
+        Символы с активностью за последние N дней (Income API).
+        Нужно для обнаружения новых пар (POLYX, ZEC, ARIA и т.д.).
+        """
+        await self._get_server_time()
+        path = "/fapi/v1/income"
+        ts = await self._timestamp_ms()
+        start = int((time.time() - days * 86400) * 1000)
+        params: Dict[str, Any] = {
+            "timestamp": ts,
+            "recvWindow": 60000,
+            "limit": 1000,
+            "startTime": start,
+        }
+        signed = self._sign(params)
+        session = await self._get_session()
+        symbols: set[str] = set()
+        try:
+            async with session.get(BASE_URL + path, params=signed, timeout=30) as resp:
+                if resp.status >= 400:
+                    return symbols
+                data = json.loads(await resp.text())
+                if not isinstance(data, list):
+                    return symbols
+                for item in data:
+                    if not isinstance(item, dict):
+                        continue
+                    s = item.get("symbol") or ""
+                    if s and isinstance(s, str) and s.isascii() and s.endswith("USDT"):
+                        symbols.add(s)
+        except Exception:
+            pass
+        return symbols
+
     async def get_futures_symbols(self) -> List[str]:
         """
         Получить список всех доступных USDT-перпетуалов.

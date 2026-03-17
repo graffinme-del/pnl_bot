@@ -21,7 +21,7 @@ def plot_equity_curve(positions: List[AggregatedPosition], output_path: Path) ->
     tz = SETTINGS.timezone
     sorted_pos = sorted(positions, key=lambda p: p.close_time)
     times = [datetime.fromtimestamp(p.close_time / 1000, tz=tz) for p in sorted_pos]
-    pnls = [p.pnl_gross for p in sorted_pos]
+    pnls = [p.pnl_net for p in sorted_pos]
     equity = pd.Series(pnls).cumsum()
 
     _ensure_dir(output_path)
@@ -39,16 +39,17 @@ def plot_equity_curve(positions: List[AggregatedPosition], output_path: Path) ->
 def plot_long_short_pie(positions: List[AggregatedPosition], output_path: Path) -> None:
     if not positions:
         return
-    long_pnl = sum(p.pnl_gross for p in positions if p.position_side == "LONG")
-    short_pnl = sum(p.pnl_gross for p in positions if p.position_side == "SHORT")
-    values = [max(long_pnl, 0.0), max(short_pnl, 0.0)]
-    labels = ["Лонги", "Шорты"]
-    if sum(values) <= 0:
+    long_pnl = sum(p.pnl_net for p in positions if p.position_side == "LONG")
+    short_pnl = sum(p.pnl_net for p in positions if p.position_side == "SHORT")
+    # Используем abs для пропорций, подписи — с учётом знака
+    vals = [abs(long_pnl), abs(short_pnl)]
+    if sum(vals) <= 0:
         return
+    labels = [f"Лонги {long_pnl:+.0f}", f"Шорты {short_pnl:+.0f}"]
 
     _ensure_dir(output_path)
-    plt.figure(figsize=(4, 4))
-    plt.pie(values, labels=labels, autopct="%1.1f%%")
+    plt.figure(figsize=(5, 4))
+    plt.pie(vals, labels=labels, autopct="%1.1f%%")
     plt.title("Доли PnL: лонги / шорты")
     plt.tight_layout()
     plt.savefig(output_path)
@@ -58,7 +59,7 @@ def plot_long_short_pie(positions: List[AggregatedPosition], output_path: Path) 
 def plot_pnl_histogram(positions: List[AggregatedPosition], output_path: Path) -> None:
     if not positions:
         return
-    pnls = [p.pnl_gross for p in positions]
+    pnls = [p.pnl_net for p in positions]
 
     _ensure_dir(output_path)
     plt.figure(figsize=(6, 4))
