@@ -135,7 +135,7 @@ def _format_report(period: Period, start: datetime, end: datetime, trades: List[
     # Detailed sections
     if period in ("day", "week"):
         lines.append("")
-        lines.append("<b>По сделкам</b> (чистый PnL после комиссии, хронологически):")
+        lines.append("<b>По сделкам</b> (Realized PnL, как на Binance — до комиссий):")
         sorted_positions = sorted(positions, key=lambda p: p.close_time)
 
         max_positions_to_show = 60
@@ -145,9 +145,9 @@ def _format_report(period: Period, start: datetime, end: datetime, trades: List[
                 time_str = dt.strftime("%H:%M")
             else:
                 time_str = dt.strftime("%d.%m %H:%M")
-            # pnl_net = gross + commission — как в интерфейсе Binance (чистый результат)
+            # pnl_gross — как Realized PnL на странице Binance Position History
             lines.append(
-                f"{idx}) {time_str}  {p.symbol}  {p.position_side}   {p.pnl_net:.2f} USDT"
+                f"{idx}) {time_str}  {p.symbol}  {p.position_side}   {p.pnl_gross:.2f} USDT"
             )
         hidden = max(0, len(sorted_positions) - max_positions_to_show)
         if hidden > 0:
@@ -173,12 +173,12 @@ def _format_report(period: Period, start: datetime, end: datetime, trades: List[
     short_positions = [p for p in positions if p.position_side == "SHORT"]
 
     def _dir_stats(ps: List[AggregatedPosition]) -> tuple[float, float, float, int, float]:
-        """Считаем по pnl_net — чтобы сумма совпадала с «По сделкам» и Чистым результатом."""
-        d_profit = sum(p.pnl_net for p in ps if p.pnl_net > 0)
-        d_loss = sum(p.pnl_net for p in ps if p.pnl_net < 0)
+        """По gross — как в блоке «По сделкам» и на Binance."""
+        d_profit = sum(p.pnl_gross for p in ps if p.pnl_gross > 0)
+        d_loss = sum(p.pnl_gross for p in ps if p.pnl_gross < 0)
         d_pnl = d_profit + d_loss
         d_count = len(ps)
-        d_wins = sum(1 for p in ps if p.pnl_net > 0)
+        d_wins = sum(1 for p in ps if p.pnl_gross > 0)
         d_winrate = (d_wins / d_count * 100) if d_count else 0.0
         return d_profit, d_loss, d_pnl, d_count, d_winrate
 
@@ -186,7 +186,7 @@ def _format_report(period: Period, start: datetime, end: datetime, trades: List[
     short_profit, short_loss, short_pnl, short_count, short_wr = _dir_stats(short_positions)
 
     lines.append("")
-    lines.append("<b><i>По направлениям</i></b> (чистый PnL после комиссии):")
+    lines.append("<b><i>По направлениям</i></b> (до комиссий, как Binance):")
     lines.append("")
     lines.append("<b>Лонги</b>")
     lines.append(f"  Profit: {long_profit:.2f}  |  Loss: {long_loss:.2f}  |  PnL: <b>{long_pnl:.2f} USDT</b>")
