@@ -11,28 +11,44 @@ from .storage import append_trades, get_last_trade_id_for_symbol
 log = logging.getLogger(__name__)
 
 
+async def _fetch_symbol_trades(
+    client: BinanceClient,
+    symbol: str,
+) -> List[Trade]:
+    """Запрос сделок по одному символу."""
+    try:
+        last_id = get_last_trade_id_for_symbol(symbol)
+        from_id = (last_id + 1) if last_id is not None else None
+        return await client.get_user_trades(symbol=symbol, from_id=from_id)
+    except Exception as e:
+        log.warning("sync %s: %s", symbol, e)
+        return []
+
+
 async def sync_trades_once() -> List[Trade]:
     """
-    Fetch new trades from Binance. Синхронизируем ВСЕ символы — как на странице
-    https://www.binance.com/ru/my/orders/futures/positionhistory
+    Fetch new trades from Binance. Параллельно до 10 символов — ~20–30 сек вместо 2–3 мин.
     """
     client = BinanceClient()
     new_trades: List[Trade] = []
     try:
         symbols = await client.get_futures_symbols()
-        log.info("Sync: %d символов", len(symbols))
-        for i, symbol in enumerate(symbols):
-            try:
-                last_id = get_last_trade_id_for_symbol(symbol)
-                from_id = (last_id + 1) if last_id is not None else None
-                trades = await client.get_user_trades(symbol=symbol, from_id=from_id)
-                if trades:
-                    new_trades.extend(trades)
-                # Пауза каждые 20 символов — меньше нагрузка на API
-                if (i + 1) % 20 == 0:
-                    await asyncio.sleep(1)
-            except Exception as e:
-                log.warning("sync %s: %s", symbol, e)
+        log.info("Sync: %d символов (параллельно)", len(symbols))
+        sem = asyncio.Semaphore(10)  # макс 10 одновременных запросов
+
+        async def fetch_with_sem(s: str) -> List[Trade]:
+            async with sem:
+                return await _fetch_symbol_trades(client, s)
+
+        results = await asyncio.gather(
+            *[fetch_with_sem(s) for s in symbols],
+            return_exceptions=True,
+        )
+        for r in results:
+            if isinstance(r, list):
+                new_trades.extend(r)
+            elif isinstance(r, Exception):
+                log.warning("sync error: %s", r)
         if new_trades:
             # sort by close_time to keep file ordered
             new_trades.sort(key=lambda t: t.close_time)
