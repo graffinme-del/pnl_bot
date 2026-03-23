@@ -10,7 +10,7 @@ from .models import Trade
 from .storage import read_all_trades
 
 
-Period = Literal["day", "week", "month"]
+Period = Literal["day", "week", "month", "range"]
 
 
 @dataclass
@@ -113,6 +113,11 @@ def _format_report(period: Period, start: datetime, end: datetime, trades: List[
         header = f"📊 Отчёт по фьючерсам Binance — за СЕГОДНЯ ({header_date})"
     elif period == "week":
         header = "📊 Отчёт по фьючерсам Binance — за НЕДЕЛЮ"
+    elif period == "range":
+        header = (
+            f"📊 Отчёт по фьючерсам Binance — "
+            f"{start_local.strftime('%d.%m.%Y')} – {end_local.strftime('%d.%m.%Y')}"
+        )
     else:
         header = "📊 Отчёт по фьючерсам Binance — за МЕСЯЦ"
 
@@ -125,7 +130,7 @@ def _format_report(period: Period, start: datetime, end: datetime, trades: List[
     lines.append(f"• <b><i>Сделок: {trades_count}</i></b>")
     lines.append(f"• <b><i>Winrate: {winrate:.1f}% ({wins} / {trades_count})</i></b>")
 
-    if period in ("week", "month"):
+    if period in ("week", "month", "range"):
         if abs(total_loss) > 1e-9:
             profit_factor = total_profit / abs(total_loss)
         else:
@@ -133,7 +138,7 @@ def _format_report(period: Period, start: datetime, end: datetime, trades: List[
         lines.append(f"• Profit factor: {profit_factor:.2f}")
 
     # Detailed sections
-    if period in ("day", "week"):
+    if period in ("day", "week", "range"):
         lines.append("")
         lines.append("<b>По сделкам</b> (Realized PnL, как на Binance — до комиссий):")
         sorted_positions = sorted(positions, key=lambda p: p.close_time)
@@ -201,6 +206,11 @@ def _format_report(period: Period, start: datetime, end: datetime, trades: List[
         period_line = (
             f"⏱ Период отчёта: сегодня, 00:00–{end_local.strftime('%H:%M')} (локальное время)"
         )
+    elif period == "range":
+        period_line = (
+            f"⏱ Период отчёта: {start_local.strftime('%d.%m.%Y')} 00:00 – "
+            f"{end_local.strftime('%d.%m.%Y')} {end_local.strftime('%H:%M')} (локальное время)"
+        )
     elif period == "week":
         period_line = (
             "⏱ Период отчёта: текущая неделя "
@@ -222,10 +232,20 @@ def _format_report(period: Period, start: datetime, end: datetime, trades: List[
     return "\n".join(lines)
 
 
-def build_pnl_report(period: Period, now: datetime | None = None) -> ReportResult:
-    if now is None:
-        now = datetime.now(tz=SETTINGS.timezone)
-    start, end = _calc_period_bounds(period, now)
+def build_pnl_report(
+    period: Period,
+    now: datetime | None = None,
+    start: datetime | None = None,
+    end: datetime | None = None,
+) -> ReportResult:
+    tz = SETTINGS.timezone
+    now = now or datetime.now(tz=tz)
+    if start is not None and end is not None:
+        start = start.astimezone(tz).replace(hour=0, minute=0, second=0, microsecond=0)
+        end = end.astimezone(tz)
+        period = "range"
+    else:
+        start, end = _calc_period_bounds(period, now)
     all_trades = read_all_trades()
     period_trades = _filter_trades(all_trades, start, end)
     positions = _aggregate_by_order(period_trades)

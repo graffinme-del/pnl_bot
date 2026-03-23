@@ -46,20 +46,7 @@ async def _send_report(
         except Exception:
             pass
 
-    # Sync перед ручным отчётом — свежие данные
-    if not auto and source_message:
-        try:
-            status_msg = await bot.send_message(
-                source_message.chat.id, "Синхронизирую сделки..."
-            )
-            await sync_trades_once()
-            try:
-                await status_msg.delete()
-            except Exception:
-                pass
-        except Exception:
-            pass
-
+    # Без sync перед отчётом — данные из расписания (каждые 15 мин). Мгновенный ответ.
     now = datetime.now(tz=SETTINGS.timezone)
     report = build_pnl_report(period=period, now=now, start=start, end=end)
 
@@ -195,7 +182,11 @@ async def cmd_pnl_range(message: Message) -> None:
         )
         return
     start, end = parsed
-    await _send_report("range", auto=False, source_message=message, start=start, end=end)
+    try:
+        await _send_report("range", auto=False, source_message=message, start=start, end=end)
+    except Exception as e:
+        log.exception("pnl_range error")
+        await message.reply(f"Ошибка: {e}")
 
 
 def _setup_scheduler(scheduler: AsyncIOScheduler) -> None:
@@ -225,10 +216,10 @@ def _setup_scheduler(scheduler: AsyncIOScheduler) -> None:
         name="monthly_pnl",
     )
 
-    # Sync всех символов — каждые 15 минут (200+ запросов, ~2–3 мин)
+    # Sync (known+income) — каждые 5 минут, быстро
     scheduler.add_job(
         sync_trades_once,
-        CronTrigger(minute="*/15", timezone=tz),
+        CronTrigger(minute="*/5", timezone=tz),
         name="sync_trades",
     )
 

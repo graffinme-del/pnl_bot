@@ -6,7 +6,7 @@ from typing import List
 
 from .binance_client import BinanceClient
 from .models import Trade
-from .storage import append_trades, get_last_trade_id_for_symbol
+from .storage import append_trades, get_last_trade_id_for_symbol, get_known_symbols
 
 log = logging.getLogger(__name__)
 
@@ -27,14 +27,21 @@ async def _fetch_symbol_trades(
 
 async def sync_trades_once() -> List[Trade]:
     """
-    Fetch new trades from Binance. Параллельно до 10 символов — ~20–30 сек вместо 2–3 мин.
+    Fetch new trades from Binance.
+    Известные + из Income API (новые пары) — быстро. Пустой storage = все символы.
     """
     client = BinanceClient()
     new_trades: List[Trade] = []
     try:
-        symbols = await client.get_futures_symbols()
-        log.info("Sync: %d символов (параллельно)", len(symbols))
-        sem = asyncio.Semaphore(10)  # макс 10 одновременных запросов
+        known = get_known_symbols()
+        if known:
+            recent = await client.get_recent_income_symbols(days=7)
+            symbols = sorted(known | recent)
+            log.info("Sync: %d символов (known+income)", len(symbols))
+        else:
+            symbols = await client.get_futures_symbols()
+            log.info("Sync: %d символов (все, первый запуск)", len(symbols))
+        sem = asyncio.Semaphore(5)  # макс 5 одновременно — меньше нагрузка на сервер
 
         async def fetch_with_sem(s: str) -> List[Trade]:
             async with sem:
