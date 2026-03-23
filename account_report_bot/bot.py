@@ -11,6 +11,9 @@ from pathlib import Path
 from aiogram import Bot, Dispatcher
 from aiogram.filters import Command
 from aiogram.client.default import DefaultBotProperties
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand, BotCommandScopeAllPrivateChats, FSInputFile, Message
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -29,7 +32,11 @@ bot = Bot(
     token=SETTINGS.telegram_bot_token,
     default=DefaultBotProperties(parse_mode="HTML"),
 )
-dp = Dispatcher()
+class PnlRangeStates(StatesGroup):
+    waiting_dates = State()
+
+
+dp = Dispatcher(storage=MemoryStorage())
 
 
 async def _send_report(
@@ -130,14 +137,17 @@ async def cmd_pnl_month(message: Message) -> None:
     await _send_report("month", auto=False, source_message=message)
 
 
-def _parse_dates(text: str, tz) -> tuple[datetime, datetime] | None:
+def _parse_dates(text: str, tz, strip_command: bool = True) -> tuple[datetime, datetime] | None:
     """
     Парсит даты из текста. Форматы: DD.MM.YYYY, DD.MM, D.M
+    strip_command: убирать ведущую команду (/pnl_range ...) или нет.
     Возвращает (start, end) или None при ошибке.
     """
-    # Убираем команду, оставляем аргументы
-    parts = text.split(maxsplit=1)
-    args = (parts[1] if len(parts) > 1 else "").strip()
+    if strip_command:
+        parts = text.split(maxsplit=1)
+        args = (parts[1] if len(parts) > 1 else "").strip()
+    else:
+        args = (text or "").strip()
     if not args:
         return None
     tokens = args.split()
@@ -167,20 +177,38 @@ def _parse_dates(text: str, tz) -> tuple[datetime, datetime] | None:
 
 
 @dp.message(Command("pnl_range"))
-async def cmd_pnl_range(message: Message) -> None:
-    """Отчёт за выбранный период. Примеры:
-    /pnl_range 22.03.2026
-    /pnl_range 10.03.2026 22.03.2026
-    """
+async def cmd_pnl_range(message: Message, state: FSMContext) -> None:
+    """Отчёт за выбранный период. Без дат — просит ввести в следующем сообщении."""
     tz = SETTINGS.timezone
-    parsed = _parse_dates(message.text or "", tz)
+    parsed = _parse_dates(message.text or "", tz, strip_command=True)
     if not parsed:
-        await message.reply(
-            "Формат: /pnl_range DD.MM.YYYY или /pnl_range DD.MM.YYYY DD.MM.YYYY\n"
-            "Пример: /pnl_range 22.03.2026\n"
-            "Пример: /pnl_range 10.03 22.03.2026"
-        )
+        await state.set_state(PnlRangeStates.waiting_dates)
+        await message.reply("Введите нужные даты.\nФормат: <code>DD.MM</code> или <code>DD.MM DD.MM</code>\nНапример: 22.03 или 10.03 22.03")
         return
+    start, end = parsed
+    await state.clear()
+    try:
+        await _send_report("range", auto=False, source_message=message, start=start, end=end)
+    except Exception as e:
+        log.exception("pnl_range error")
+        await message.reply(f"Ошибка: {e}")
+
+
+@dp.message(PnlRangeStates.waiting_dates, Command("cancel"))
+async def cmd_pnl_range_cancel(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.reply("Отменено.")
+
+
+@dp.message(PnlRangeStates.waiting_dates)
+async def cmd_pnl_range_dates(message: Message, state: FSMContext) -> None:
+    """Обработка введённых дат (без команды)."""
+    tz = SETTINGS.timezone
+    parsed = _parse_dates(message.text or "", tz, strip_command=False)
+    if not parsed:
+        await message.reply("Не удалось распознать даты. Формат: DD.MM или DD.MM DD.MM")
+        return
+    await state.clear()
     start, end = parsed
     try:
         await _send_report("range", auto=False, source_message=message, start=start, end=end)
