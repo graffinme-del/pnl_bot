@@ -140,7 +140,7 @@ def _format_report(period: Period, start: datetime, end: datetime, trades: List[
     # Detailed sections
     if period in ("day", "week", "range"):
         lines.append("")
-        lines.append("<b>По сделкам</b> (Realized PnL, как на Binance — до комиссий):")
+        lines.append("<b>По сделкам</b> (чистый PnL, после комиссий):")
         sorted_positions = sorted(positions, key=lambda p: p.close_time)
 
         max_positions_to_show = 60
@@ -150,9 +150,8 @@ def _format_report(period: Period, start: datetime, end: datetime, trades: List[
                 time_str = dt.strftime("%H:%M")
             else:
                 time_str = dt.strftime("%d.%m %H:%M")
-            # pnl_gross — как Realized PnL на странице Binance Position History
             lines.append(
-                f"{idx}) {time_str}  {p.symbol}  {p.position_side}   {p.pnl_gross:.2f} USDT"
+                f"{idx}) {time_str}  {p.symbol}  {p.position_side}   {p.pnl_net:.2f} USDT"
             )
         hidden = max(0, len(sorted_positions) - max_positions_to_show)
         if hidden > 0:
@@ -227,7 +226,7 @@ def _format_report(period: Period, start: datetime, end: datetime, trades: List[
 
     lines.append("")
     lines.append(period_line)
-    lines.append("Данные получены из истории сделок Binance Futures.")
+    lines.append("Данные из Binance Futures (userTrades, агрегация по ордеру).")
 
     return "\n".join(lines)
 

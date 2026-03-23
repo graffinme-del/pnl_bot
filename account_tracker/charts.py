@@ -41,7 +41,6 @@ def plot_long_short_pie(positions: List[AggregatedPosition], output_path: Path) 
         return
     long_pnl = sum(p.pnl_net for p in positions if p.position_side == "LONG")
     short_pnl = sum(p.pnl_net for p in positions if p.position_side == "SHORT")
-    # Используем abs для пропорций, подписи — с учётом знака
     vals = [abs(long_pnl), abs(short_pnl)]
     if sum(vals) <= 0:
         return

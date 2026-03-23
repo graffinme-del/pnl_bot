@@ -183,7 +183,10 @@ async def cmd_pnl_range(message: Message, state: FSMContext) -> None:
     parsed = _parse_dates(message.text or "", tz, strip_command=True)
     if not parsed:
         await state.set_state(PnlRangeStates.waiting_dates)
-        await message.reply("Введите нужные даты.\nФормат: <code>DD.MM</code> или <code>DD.MM DD.MM</code>\nНапример: 22.03 или 10.03 22.03")
+        prompt = await message.reply(
+            "Введите нужные даты.\nФормат: <code>DD.MM</code> или <code>DD.MM DD.MM</code>\nНапример: 22.03 или 10.03 22.03"
+        )
+        await state.update_data(prompt_chat_id=message.chat.id, prompt_msg_id=prompt.message_id)
         return
     start, end = parsed
     await state.clear()
@@ -208,7 +211,14 @@ async def cmd_pnl_range_dates(message: Message, state: FSMContext) -> None:
     if not parsed:
         await message.reply("Не удалось распознать даты. Формат: DD.MM или DD.MM DD.MM")
         return
+    data = await state.get_data()
     await state.clear()
+    # Удаляем системное сообщение «Введите нужные даты»
+    try:
+        if data.get("prompt_chat_id") and data.get("prompt_msg_id"):
+            await bot.delete_message(data["prompt_chat_id"], data["prompt_msg_id"])
+    except Exception:
+        pass
     start, end = parsed
     try:
         await _send_report("range", auto=False, source_message=message, start=start, end=end)
