@@ -67,31 +67,43 @@ class BinanceClient:
         return int(time.time() * 1000 + self._time_offset_ms)
 
     async def get_recent_income_symbols(self, days: int = 7) -> set[str]:
-        """Символы с активностью за N дней — для быстрого sync (новые пары)."""
+        """Символы с активностью за N дней — для быстрого sync (новые пары).
+        Пагинация при >1000 записей."""
         await self._get_server_time()
         path = "/fapi/v1/income"
-        ts = await self._timestamp_ms()
-        start = int((time.time() - days * 86400) * 1000)
-        params: Dict[str, Any] = {
-            "timestamp": ts,
-            "recvWindow": 60000,
-            "limit": 1000,
-            "startTime": start,
-        }
-        signed = self._sign(params)
         session = await self._get_session()
         symbols: set[str] = set()
+        start = int((time.time() - days * 86400) * 1000)
+        limit = 1000
+
         try:
-            async with session.get(BASE_URL + path, params=signed, timeout=30) as resp:
-                if resp.status >= 400:
-                    return symbols
-                data = json.loads(await resp.text())
-                if isinstance(data, list):
-                    for item in data:
-                        if isinstance(item, dict):
-                            s = item.get("symbol") or ""
-                            if s and isinstance(s, str) and s.isascii() and s.endswith("USDT"):
-                                symbols.add(s)
+            while True:
+                ts = await self._timestamp_ms()
+                params: Dict[str, Any] = {
+                    "timestamp": ts,
+                    "recvWindow": 60000,
+                    "limit": limit,
+                    "startTime": start,
+                }
+                signed = self._sign(params)
+                async with session.get(BASE_URL + path, params=signed, timeout=30) as resp:
+                    if resp.status >= 400:
+                        break
+                    data = json.loads(await resp.text())
+                if not isinstance(data, list) or not data:
+                    break
+                for item in data:
+                    if isinstance(item, dict):
+                        s = item.get("symbol") or ""
+                        if s and isinstance(s, str) and s.isascii() and s.endswith("USDT"):
+                            symbols.add(s)
+                if len(data) < limit:
+                    break
+                # Следующая страница: startTime = последняя запись + 1
+                last_time = data[-1].get("time") if isinstance(data[-1], dict) else None
+                if last_time is None:
+                    break
+                start = int(last_time) + 1
         except Exception:
             pass
         return symbols
@@ -160,21 +172,39 @@ class BinanceClient:
     ) -> List[Trade]:
         """
         Fetch user's futures trades for a symbol using /fapi/v1/userTrades.
+        Пагинация: при 1000+ сделок — подтягивает все (fromId по последнему id).
         При -1021 (timestamp) — одна повторная попытка с обновлением времени.
         """
-        try:
-            data = await self._fetch_user_trades_raw(symbol, from_id, limit)
-        except aiohttp.ClientResponseError as e:
-            if "-1021" in str(e):
-                log.warning("Binance -1021 для %s, retry с обновлением времени", symbol)
-                self._time_offset_ms = None
-                data = await self._fetch_user_trades_raw(symbol, from_id, limit)
-            else:
-                raise
+        all_items: List[Dict[str, Any]] = []
+        current_from_id = from_id
+
+        while True:
+            try:
+                data = await self._fetch_user_trades_raw(
+                    symbol, current_from_id, limit
+                )
+            except aiohttp.ClientResponseError as e:
+                if "-1021" in str(e):
+                    log.warning("Binance -1021 для %s, retry с обновлением времени", symbol)
+                    self._time_offset_ms = None
+                    data = await self._fetch_user_trades_raw(
+                        symbol, current_from_id, limit
+                    )
+                else:
+                    raise
+
+            if not data:
+                break
+            all_items.extend(data)
+            if len(data) < limit:
+                break
+            # API возвращает от старых к новым; fromId = id следующего за последним
+            last_id = int(data[-1]["id"])
+            current_from_id = last_id + 1
 
         trades: List[Trade] = []
         now_ms = int(time.time() * 1000)
-        for item in data:
+        for item in all_items:
             realized_pnl = float(item.get("realizedPnl", 0.0))
             commission = float(item.get("commission", 0.0))
             trade = Trade(

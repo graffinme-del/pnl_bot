@@ -242,7 +242,8 @@ def build_pnl_report(
     now = now or datetime.now(tz=tz)
     if start is not None and end is not None:
         start = start.astimezone(tz).replace(hour=0, minute=0, second=0, microsecond=0)
-        end = end.astimezone(tz)
+        # end = конец дня (23:59:59), чтобы включить все сделки за последний день
+        end = end.astimezone(tz).replace(hour=23, minute=59, second=59, microsecond=999999)
         period = "range"
     else:
         start, end = _calc_period_bounds(period, now)

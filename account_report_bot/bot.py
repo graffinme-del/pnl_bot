@@ -46,7 +46,7 @@ async def _send_report(
         except Exception:
             pass
 
-    # Без sync перед отчётом — данные из расписания (каждые 15 мин). Мгновенный ответ.
+    # Данные только из файла — sync каждые 5 мин в фоне.
     now = datetime.now(tz=SETTINGS.timezone)
     report = build_pnl_report(period=period, now=now, start=start, end=end)
 
@@ -216,7 +216,7 @@ def _setup_scheduler(scheduler: AsyncIOScheduler) -> None:
         name="monthly_pnl",
     )
 
-    # Sync (known+income) — каждые 5 минут, быстро
+    # Sync (Binance → storage/account_trades.jsonl) — каждые 5 минут, в фоне
     scheduler.add_job(
         sync_trades_once,
         CronTrigger(minute="*/5", timezone=tz),
