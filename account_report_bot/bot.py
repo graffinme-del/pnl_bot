@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from datetime import datetime, time as dtime
 
 log = logging.getLogger(__name__)
@@ -35,6 +36,8 @@ async def _send_report(
     period: str,
     auto: bool,
     source_message: Message | None = None,
+    start: datetime | None = None,
+    end: datetime | None = None,
 ) -> None:
     # Сразу удаляем командное сообщение пользователя (при ручном вызове)
     if not auto and source_message is not None:
@@ -58,11 +61,18 @@ async def _send_report(
             pass
 
     now = datetime.now(tz=SETTINGS.timezone)
-    report = build_pnl_report(period=period, now=now)
+    report = build_pnl_report(period=period, now=now, start=start, end=end)
 
-    # Графики только для недели и месяца (по агрегированным позициям)
+    # Графики для недели, месяца и произвольного периода (если > 3 дней)
     images: list[Path] = []
-    if period in ("week", "month") and report.positions:
+    show_charts = period in ("week", "month") or (
+        period == "range"
+        and start is not None
+        and end is not None
+        and (end - start).days >= 3
+        and report.positions
+    )
+    if show_charts and report.positions:
         charts_dir = Path("charts") / period
         equity_path = charts_dir / "equity.png"
         pie_path = charts_dir / "long_short.png"
@@ -104,7 +114,7 @@ async def _send_report(
             if not auto:
                 sent_ids.append(m.message_id)
 
-    # При ручном вызове — удалить текст и картинки через 2 минуты (в фоне)
+    # Только при ручном вызове — удалить через 2 минуты
     if not auto and sent_ids:
 
         async def _delete_after_delay() -> None:
@@ -131,6 +141,61 @@ async def cmd_pnl_week(message: Message) -> None:
 @dp.message(Command("pnl_month"))
 async def cmd_pnl_month(message: Message) -> None:
     await _send_report("month", auto=False, source_message=message)
+
+
+def _parse_dates(text: str, tz) -> tuple[datetime, datetime] | None:
+    """
+    Парсит даты из текста. Форматы: DD.MM.YYYY, DD.MM, D.M
+    Возвращает (start, end) или None при ошибке.
+    """
+    # Убираем команду, оставляем аргументы
+    parts = text.split(maxsplit=1)
+    args = (parts[1] if len(parts) > 1 else "").strip()
+    if not args:
+        return None
+    tokens = args.split()
+    if not tokens:
+        return None
+
+    def parse_one(s: str) -> datetime | None:
+        m = re.match(r"^(\d{1,2})\.(\d{1,2})(?:\.(\d{4}))?$", s.strip())
+        if not m:
+            return None
+        d, mon = int(m.group(1)), int(m.group(2))
+        y = int(m.group(3)) if m.group(3) else datetime.now(tz).year
+        try:
+            return datetime(y, mon, d, tzinfo=tz)
+        except ValueError:
+            return None
+
+    dt1 = parse_one(tokens[0])
+    if not dt1:
+        return None
+    dt2 = parse_one(tokens[1]) if len(tokens) >= 2 else dt1
+    if not dt2:
+        return None
+    if dt1 > dt2:
+        dt1, dt2 = dt2, dt1
+    return dt1, dt2
+
+
+@dp.message(Command("pnl_range"))
+async def cmd_pnl_range(message: Message) -> None:
+    """Отчёт за выбранный период. Примеры:
+    /pnl_range 22.03.2026
+    /pnl_range 10.03.2026 22.03.2026
+    """
+    tz = SETTINGS.timezone
+    parsed = _parse_dates(message.text or "", tz)
+    if not parsed:
+        await message.reply(
+            "Формат: /pnl_range DD.MM.YYYY или /pnl_range DD.MM.YYYY DD.MM.YYYY\n"
+            "Пример: /pnl_range 22.03.2026\n"
+            "Пример: /pnl_range 10.03 22.03.2026"
+        )
+        return
+    start, end = parsed
+    await _send_report("range", auto=False, source_message=message, start=start, end=end)
 
 
 def _setup_scheduler(scheduler: AsyncIOScheduler) -> None:
@@ -174,6 +239,7 @@ async def main() -> None:
         BotCommand(command="pnl_today", description="Отчёт за сегодня"),
         BotCommand(command="pnl_week", description="Отчёт за неделю"),
         BotCommand(command="pnl_month", description="Отчёт за месяц"),
+        BotCommand(command="pnl_range", description="Отчёт за период (DD.MM DD.MM)"),
     ]
     await bot.set_my_commands(commands, scope=BotCommandScopeAllPrivateChats())
     await bot.set_my_commands(commands, scope=BotCommandScopeAllPrivateChats(), language_code="ru")
